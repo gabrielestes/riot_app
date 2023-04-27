@@ -2,10 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"io"
+	"fmt"
+	"html/template"
+	"io/ioutil"
 	"log"
 	"net/http"
-	"os"
 )
 
 // YouTube API docs: https://developers.google.com/youtube/v3/docs
@@ -14,84 +15,147 @@ import (
 // `getChannelInfo` and `getVideoInfo`, issue HTTP requests to the API for YT channel data and video info.
 
 const (
-	baseURL       = "https://www.googleapis.com/youtube/v3/"
-	channelInfo   = "channels?part=snippet,statistics&id="
-	videoInfo     = "search?part=snippet&type=video&order=date&maxResults=10&channelId="
-	apiKeyParam   = "&key="
+	youtubeAPIKey = "YOUR_API_KEY"
 )
 
+type Channel struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+type PageInfo struct {
+	TotalResults   int `json:"totalResults"`
+	ResultsPerPage int `json:"resultsPerPage"`
+}
+
+var tmpl = template.Must(template.New("channelInfo").Parse(`
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>YouTube Channel Information</title>
+	</head>
+	<body>
+		<h1>Channel Information</h1>
+		{{range .Items}}
+			<h2>{{.Snippet.Title}}</h2>
+			<p>{{.Snippet.Description}}</p>
+		{{end}}
+	</body>
+	</html>
+`))
+
 type ChannelResponse struct {
+	Kind  string `json:"kind"`
+	Etag  string `json:"etag"`
 	Items []struct {
+		Kind    string `json:"kind"`
+		Etag    string `json:"etag"`
+		ID      string `json:"id"`
 		Snippet struct {
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			PublishedAt string `json:"publishedAt"`
+			PublishedAt string  `json:"publishedAt"`
+			ChannelID   string  `json:"channelId"`
+			Title       string  `json:"title"`
+			Description string  `json:"description"`
+			Thumbnails  string  `json:"thumbnails"`
+			Channel     Channel `json:"channel"`
 		} `json:"snippet"`
-		Statistics struct {
-			SubscriberCount string `json:"subscriberCount"`
-		} `json:"statistics"`
 	} `json:"items"`
+	PageInfo PageInfo `json:"pageInfo"`
 }
 
 type VideoResponse struct {
+	Kind  string `json:"kind"`
+	Etag  string `json:"etag"`
 	Items []struct {
+		Kind    string `json:"kind"`
+		Etag    string `json:"etag"`
+		ID      string `json:"id"`
 		Snippet struct {
 			PublishedAt string `json:"publishedAt"`
+			ChannelID   string `json:"channelId"`
 			Title       string `json:"title"`
+			Description string `json:"description"`
 		} `json:"snippet"`
 	} `json:"items"`
+	PageInfo PageInfo `json:"pageInfo"`
 }
 
-func main() {
-	http.HandleFunc("/channel-info", channelInfoHandler)
+var videoTmpl = template.Must(template.New("videoInfo").Parse(`
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>YouTube Video Information</title>
+	</head>
+	<body>
+		<h1>Video Information</h1>
+		{{range .Items}}
+			<h2>{{.Snippet.Title}}</h2>
+			<p>{{.Snippet.Description}}</p>
+			<p>Published at: {{.Snippet.PublishedAt}}</p>
+		{{end}}
+	</body>
+	</html>
+`))
 
-	port := "8080"
-	log.Printf("Starting server on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
-}
-
-func channelInfoHandler(w http.ResponseWriter, r *http.Request) {
-	channelID := r.URL.Query().Get("channel_id")
-	if channelID == "" {
-		http.Error(w, "channel_id is required", http.StatusBadRequest)
-		return
-	}
-
-	apiKey := os.Getenv("YOUTUBE_API_KEY")
-	channelInfo, err := getChannelInfo(channelID, apiKey)
+func getChannelInfo(w http.ResponseWriter, r *http.Request) {
+	channelID := r.URL.Query().Get("id")
+	resp, err := http.Get(fmt.Sprintf("https://www.googleapis.com/youtube/v3/channels?part=snippet&id=%s&key=%s", channelID, youtubeAPIKey))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	jsonData, err := json.Marshal(channelInfo)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(jsonData)
-}
-
-func getChannelInfo(channelID, apiKey string) (*ChannelResponse, error) {
-	resp, err := http.Get(baseURL + channelInfo + channelID + apiKeyParam + apiKey)
-	if err != nil {
-		return nil, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	var channelResponse ChannelResponse
-	err = json.Unmarshal(body, &channelResponse)
-	if err != nil {
-		return nil, err
+	if err := json.Unmarshal(body, &channelResponse); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	return &channelResponse, nil
+	if err := tmpl.Execute(w, channelResponse); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func getVideoInfo(w http.ResponseWriter, r *http.Request) {
+	videoID := r.URL.Query().Get("id")
+	resp, err := http.Get(fmt.Sprintf("https://www.googleapis.com/youtube/v3/videos?part=snippet&id=%s&key=%s", videoID, youtubeAPIKey))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var videoResponse VideoResponse
+	if err := json.Unmarshal(body, &videoResponse); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := videoTmpl.Execute(w, videoResponse); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func main() {
+	http.HandleFunc("/", getChannelInfo)
+	http.HandleFunc("/video", getVideoInfo)
+
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatal(err)
+	}
 }
